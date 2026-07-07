@@ -1,0 +1,1079 @@
+```react
+import React, { useState, useEffect } from 'react';
+import { 
+  Heart, 
+  Calendar, 
+  Image as ImageIcon, 
+  MessageSquare, 
+  Plus, 
+  Trash2, 
+  ChevronLeft, 
+  ChevronRight, 
+  Sparkles, 
+  MapPin, 
+  Clock, 
+  Camera, 
+  Edit3, 
+  Check, 
+  X,
+  BookOpen,
+  CloudOff,
+  RefreshCw,
+  Gift,
+  Cake
+} from 'lucide-react';
+
+// Firebase Modules
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, addDoc, deleteDoc } from 'firebase/firestore';
+
+// 환경 변수 기반 Firebase 초기화
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'couple-calendar-app';
+
+export default function App() {
+  // 인증 및 유저 상태
+  const [user, setUser] = useState(null);
+  const [connectionStatus, setConnectionStatus] = useState('connecting'); // 'connecting' | 'connected' | 'error'
+
+  // 프로필 및 생일 정보 상태 (요청하신 데이터로 기본 세팅)
+  const [partner1, setPartner1] = useState('승효');
+  const [partner2, setPartner2] = useState('나연');
+  const [anniversary, setAnniversary] = useState('2024-08-12');
+  const [birthday1, setBirthday1] = useState('2002-01-23'); // 승효 생일
+  const [birthday2, setBirthday2] = useState('2000-12-09'); // 나연 생일
+  
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [profileInput, setProfileInput] = useState({ 
+    partner1: '승효', 
+    partner2: '나연', 
+    anniversary: '2024-08-12',
+    birthday1: '2002-01-23',
+    birthday2: '2000-12-09'
+  });
+
+  // 탭 상태
+  const [activeTab, setActiveTab] = useState('calendar'); // 'calendar' | 'gallery' | 'messages'
+
+  // 날짜 관련
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [selectedDateStr, setSelectedDateStr] = useState(new Date().toISOString().split('T')[0]);
+  
+  // 클라우드 연동 실시간 데이터 상태
+  const [memories, setMemories] = useState([]);
+  const [messages, setMessages] = useState([]);
+
+  // 모달 및 입력 폼 상태
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newMemory, setNewMemory] = useState({
+    title: '',
+    description: '',
+    category: '데이트',
+    emoji: '💖',
+    location: ''
+  });
+  const [newMessage, setNewMessage] = useState({ sender: '남자친구', content: '' });
+
+  // D-Day 상태들
+  const [dDay, setDDay] = useState(0);
+  const [bday1DDay, setBday1DDay] = useState('');
+  const [bday2DDay, setBday2DDay] = useState('');
+
+  // 1. Firebase 인증 절차 (Rule 3 준수)
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+        setConnectionStatus('connected');
+      } catch (error) {
+        console.error("Authentication failed:", error);
+        setConnectionStatus('error');
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 2. 디데이 및 생일 디데이 실시간 계산 함수들
+  const calculateDaysBetween = (startStr, endObj) => {
+    const start = new Date(startStr);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(endObj);
+    end.setHours(0, 0, 0, 0);
+    const diffTime = end - start;
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  };
+
+  const getNextBirthdayDDay = (birthdayStr) => {
+    if (!birthdayStr) return '설정필요';
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // 생일 날짜 파싱 (MM-DD 추출)
+    const birthParts = birthdayStr.split('-');
+    if (birthParts.length < 3) return '설정필요';
+    
+    const month = parseInt(birthParts[1]) - 1;
+    const day = parseInt(birthParts[2]);
+    
+    // 올해 생일 구하기
+    let nextBirth = new Date(today.getFullYear(), month, day);
+    nextBirth.setHours(0, 0, 0, 0);
+    
+    // 이미 올해 생일이 지난 경우 내년 생일로 지정
+    if (nextBirth < today) {
+      nextBirth.setFullYear(today.getFullYear() + 1);
+    }
+    
+    const diffTime = nextBirth - today;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    if (diffDays === 0) return '🎉 Today!';
+    return `D-${diffDays}`;
+  };
+
+  useEffect(() => {
+    // 만남 디데이 계산 (사귀기 시작한 날은 1일차이므로 +1)
+    const days = calculateDaysBetween(anniversary, new Date());
+    setDDay(days >= 0 ? days + 1 : days);
+
+    // 생일 디데이 계산
+    setBday1DDay(getNextBirthdayDDay(birthday1));
+    setBday2DDay(getNextBirthdayDDay(birthday2));
+  }, [anniversary, birthday1, birthday2]);
+
+  // 3. 실시간 프로필 설정 동기화 (Rule 1 & 3 준수)
+  useEffect(() => {
+    if (!user) return;
+    
+    // Strict Path Rule 1: /artifacts/{appId}/public/data/{collectionName}
+    const profileDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'profile');
+    
+    const unsubscribe = onSnapshot(profileDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setPartner1(data.partner1 || '승효');
+        setPartner2(data.partner2 || '나연');
+        setAnniversary(data.anniversary || '2024-08-12');
+        setBirthday1(data.birthday1 || '2002-01-23');
+        setBirthday2(data.birthday2 || '2000-12-09');
+      } else {
+        // 첫 진입 시 클라우드에 요청 데이터 기준으로 문서 생성
+        setDoc(profileDocRef, {
+          partner1: '승효',
+          partner2: '나연',
+          anniversary: '2024-08-12',
+          birthday1: '2002-01-23',
+          birthday2: '2000-12-09'
+        }).catch(err => console.error("Initial profile setup failed:", err));
+      }
+    }, (error) => {
+      console.error("Profile sync error:", error);
+      setConnectionStatus('error');
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // 4. 실시간 추억(달력 일정) 목록 동기화 (Rule 1, 2, 3 준수)
+  useEffect(() => {
+    if (!user) return;
+
+    const memoriesColRef = collection(db, 'artifacts', appId, 'public', 'data', 'memories');
+    
+    const unsubscribe = onSnapshot(memoriesColRef, (querySnapshot) => {
+      const loadedMemories = [];
+      querySnapshot.forEach((doc) => {
+        loadedMemories.push({ id: doc.id, ...doc.data() });
+      });
+      
+      // Rule 2 준수: 메모리 내 정렬
+      loadedMemories.sort((a, b) => b.date.localeCompare(a.date));
+      
+      // 저장된 추억이 전혀 없을 때 초기 웰컴 추억 생성
+      if (loadedMemories.length === 0) {
+        const sampleMemories = [
+          {
+            date: '2024-08-12',
+            title: '승효와 나연 우리의 연애 시작일 ♥',
+            description: '우리가 연애를 시작하고 첫 커플이 되었던 날! 언제나 서로를 소중히 아끼고 사랑하자 🥰',
+            category: '기념일',
+            emoji: '💖',
+            location: '사랑이 시작된 곳',
+            createdAt: Date.now()
+          }
+        ];
+        sampleMemories.forEach(async (sample) => {
+          await addDoc(memoriesColRef, sample);
+        });
+      } else {
+        setMemories(loadedMemories);
+      }
+      setConnectionStatus('connected');
+    }, (error) => {
+      console.error("Memories sync error:", error);
+      setConnectionStatus('error');
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // 5. 사랑의 편지 실시간 동기화
+  useEffect(() => {
+    if (!user) return;
+
+    const messagesColRef = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+
+    const unsubscribe = onSnapshot(messagesColRef, (querySnapshot) => {
+      const loadedMessages = [];
+      querySnapshot.forEach((doc) => {
+        loadedMessages.push({ id: doc.id, ...doc.data() });
+      });
+
+      // 최신 메시지가 위로 정렬 (Rule 2 준수)
+      loadedMessages.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setMessages(loadedMessages);
+      setConnectionStatus('connected');
+    }, (error) => {
+      console.error("Messages sync error:", error);
+      setConnectionStatus('error');
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // 달력 날짜 계산
+  const getDaysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
+  const getFirstDayOfMonth = (year, month) => new Date(year, month, 1).getDay();
+
+  const handlePrevMonth = () => {
+    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
+  };
+
+  const handleNextMonth = () => {
+    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
+  };
+
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  const daysInMonth = getDaysInMonth(year, month);
+  const firstDayIndex = getFirstDayOfMonth(year, month);
+
+  const days = [];
+  for (let i = 0; i < firstDayIndex; i++) {
+    days.push(null);
+  }
+  for (let i = 1; i <= daysInMonth; i++) {
+    days.push(new Date(year, month, i));
+  }
+
+  // 특정 날짜의 메모리 가져오기
+  const getMemoriesByDate = (dateStr) => {
+    return memories.filter(m => m.date === dateStr);
+  };
+
+  // 클라우드 새 추억 등록
+  const handleAddMemory = async (e) => {
+    e.preventDefault();
+    if (!newMemory.title.trim() || !newMemory.description.trim() || !user) return;
+
+    const memoryToAdd = {
+      date: selectedDateStr,
+      title: newMemory.title,
+      description: newMemory.description,
+      category: newMemory.category,
+      emoji: newMemory.emoji,
+      location: newMemory.location || '',
+      createdAt: Date.now()
+    };
+
+    try {
+      const memoriesColRef = collection(db, 'artifacts', appId, 'public', 'data', 'memories');
+      await addDoc(memoriesColRef, memoryToAdd);
+      setNewMemory({
+        title: '',
+        description: '',
+        category: '데이트',
+        emoji: '💖',
+        location: ''
+      });
+      setShowAddModal(false);
+    } catch (error) {
+      console.error("Error writing memory to Firestore:", error);
+    }
+  };
+
+  // 클라우드 추억 삭제
+  const handleDeleteMemory = async (id) => {
+    if (!user) return;
+    try {
+      const memoryDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'memories', id);
+      await deleteDoc(memoryDocRef);
+    } catch (error) {
+      console.error("Error deleting memory:", error);
+    }
+  };
+
+  // 클라우드 러브레터 등록
+  const handleAddMessage = async (e) => {
+    e.preventDefault();
+    if (!newMessage.content.trim() || !user) return;
+
+    const messageToAdd = {
+      sender: newMessage.sender,
+      content: newMessage.content,
+      date: new Date().toISOString().split('T')[0],
+      createdAt: Date.now()
+    };
+
+    try {
+      const messagesColRef = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+      await addDoc(messagesColRef, messageToAdd);
+      setNewMessage({ ...newMessage, content: '' });
+    } catch (error) {
+      console.error("Error writing message to Firestore:", error);
+    }
+  };
+
+  // 클라우드 러브레터 삭제
+  const handleDeleteMessage = async (id) => {
+    if (!user) return;
+    try {
+      const messageDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'messages', id);
+      await deleteDoc(messageDocRef);
+    } catch (error) {
+      console.error("Error deleting message:", error);
+    }
+  };
+
+  // 프로필 및 생일 정보 서버 저장
+  const handleSaveProfile = async () => {
+    if (!user) return;
+    try {
+      const profileDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'profile');
+      await setDoc(profileDocRef, {
+        partner1: profileInput.partner1,
+        partner2: profileInput.partner2,
+        anniversary: profileInput.anniversary,
+        birthday1: profileInput.birthday1,
+        birthday2: profileInput.birthday2
+      });
+      setIsEditingProfile(false);
+    } catch (error) {
+      console.error("Error updating profile in Firestore:", error);
+    }
+  };
+
+  // 프로필 수정 모드 진입
+  const handleStartEditProfile = () => {
+    setProfileInput({ partner1, partner2, anniversary, birthday1, birthday2 });
+    setIsEditingProfile(true);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#FFF5F6] text-slate-800 font-sans pb-12 antialiased">
+      {/* 상단 핑크 감성 헤더 */}
+      <header className="bg-white/85 backdrop-blur-md border-b border-[#FFE3E8] sticky top-0 z-40 px-4 py-3 shadow-sm">
+        <div className="max-w-4xl mx-auto flex items-center justify-between gap-4">
+          
+          <div className="flex items-center gap-2 cursor-pointer" onClick={() => setActiveTab('calendar')}>
+            <div className="w-10 h-10 bg-[#FFECEF] rounded-full flex items-center justify-center shadow-inner">
+              <Heart className="w-5 h-5 text-[#FF7B93] fill-[#FF7B93] animate-pulse" />
+            </div>
+            <div>
+              <h1 className="font-extrabold text-lg text-slate-800 tracking-tight flex items-center gap-1">
+                {partner1} <Heart className="w-3.5 h-3.5 text-[#FF7B93] fill-[#FF7B93]" /> {partner2}
+              </h1>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className="text-[10px] text-[#FF7B93] font-bold bg-[#FFF0F2] px-1.5 py-0.5 rounded-md">승효♥나연 하우스</span>
+                
+                {/* 실시간 연동 상태 */}
+                {connectionStatus === 'connected' && (
+                  <span className="text-[9px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-bold">
+                    <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                    실시간 동기화됨
+                  </span>
+                )}
+                {connectionStatus === 'connecting' && (
+                  <span className="text-[9px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-bold">
+                    <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                    연결 중
+                  </span>
+                )}
+                {connectionStatus === 'error' && (
+                  <span className="text-[9px] text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded-md flex items-center gap-1 font-bold">
+                    <CloudOff className="w-2.5 h-2.5" />
+                    오프라인
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+          
+          {/* 네비게이션 탭 */}
+          <nav className="flex gap-1 bg-[#FDF0F2] p-1 rounded-full text-sm font-medium shrink-0">
+            <button 
+              onClick={() => setActiveTab('calendar')}
+              className={`px-3 py-1.5 rounded-full transition-all duration-300 flex items-center gap-1.5 ${activeTab === 'calendar' ? 'bg-[#FF7B93] text-white shadow-sm' : 'text-[#FF7B93] hover:bg-[#FFECEF]'}`}
+            >
+              <Calendar className="w-4 h-4" />
+              <span className="hidden sm:inline">커플 캘린더</span>
+            </button>
+            <button 
+              onClick={() => setActiveTab('gallery')}
+              className={`px-3 py-1.5 rounded-full transition-all duration-300 flex items-center gap-1.5 ${activeTab === 'gallery' ? 'bg-[#FF7B93] text-white shadow-sm' : 'text-[#FF7B93] hover:bg-[#FFECEF]'}`}
+            >
+              <ImageIcon className="w-4 h-4" />
+              <span className="hidden sm:inline">추억 보관함</span>
+            </button>
+            <button 
+              onClick={() => setActiveTab('messages')}
+              className={`px-3 py-1.5 rounded-full transition-all duration-300 flex items-center gap-1.5 ${activeTab === 'messages' ? 'bg-[#FF7B93] text-white shadow-sm' : 'text-[#FF7B93] hover:bg-[#FFECEF]'}`}
+            >
+              <MessageSquare className="w-4 h-4" />
+              <span className="hidden sm:inline">사랑의 편지</span>
+            </button>
+          </nav>
+        </div>
+      </header>
+
+      <main className="max-w-4xl mx-auto px-4 mt-6">
+        {/* D-Day 대시보드 위젯 */}
+        <section className="bg-white rounded-3xl p-6 md:p-8 shadow-md border border-[#FFE3E8] relative overflow-hidden mb-6 transition-all duration-300 hover:shadow-lg">
+          <div className="absolute right-[-20px] top-[-20px] w-40 h-40 bg-[#FFF0F2] rounded-full -z-10 opacity-60 pointer-events-none" />
+          
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+            <div className="flex items-center gap-6 flex-1">
+              {/* 하트비트 애니메이션 디데이 */}
+              <div className="relative flex items-center justify-center shrink-0">
+                <div className="absolute w-20 h-20 bg-[#FFECEF] rounded-full animate-ping opacity-70" />
+                <div className="w-24 h-24 bg-gradient-to-tr from-[#FF7B93] to-[#FF9EAF] rounded-2xl shadow-md flex flex-col items-center justify-center text-white z-10 relative">
+                  <span className="text-[11px] font-bold tracking-widest uppercase opacity-95">우리 연애</span>
+                  <span className="text-2xl font-black mt-0.5">D+{dDay}</span>
+                  <Heart className="w-3.5 h-3.5 text-white fill-white mt-1" />
+                </div>
+              </div>
+
+              {/* 프로필 정보 */}
+              {!isEditingProfile ? (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-3">
+                    <h2 className="text-2xl font-extrabold text-slate-800 flex items-center gap-1.5">
+                      <span>{partner1}</span>
+                      <Heart className="w-5 h-5 text-[#FF7B93] fill-[#FF7B93] scale-110 animate-pulse" />
+                      <span>{partner2}</span>
+                    </h2>
+                    <button 
+                      onClick={handleStartEditProfile}
+                      className="p-1.5 hover:bg-[#FFF0F2] rounded-full text-slate-400 hover:text-[#FF7B93] transition-colors"
+                      title="이름, 시작일, 생일 설정 수정"
+                    >
+                      <Edit3 className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <p className="text-slate-500 text-sm flex items-center gap-1.5 font-medium">
+                    <Calendar className="w-4 h-4 text-[#FF7B93]" />
+                    <span>사랑의 시작: {new Date(anniversary).toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })}</span>
+                  </p>
+                  
+                  {/* 생일 관련 서브 디스플레이 */}
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <span className="text-[10px] text-slate-500 bg-[#FFF0F2] font-semibold px-2.5 py-1 rounded-full flex items-center gap-1">
+                      🎂 {partner1} 생일: {birthday1.substring(5).replace('-', '/')}
+                    </span>
+                    <span className="text-[10px] text-slate-500 bg-[#FFF0F2] font-semibold px-2.5 py-1 rounded-full flex items-center gap-1">
+                      🎂 {partner2} 생일: {birthday2.substring(5).replace('-', '/')}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex-1 space-y-3 bg-[#FFFBFB] p-4 rounded-2xl border border-[#FFE3E8]">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 mb-0.5">남자친구</label>
+                      <input 
+                        type="text" 
+                        value={profileInput.partner1} 
+                        onChange={(e) => setProfileInput({...profileInput, partner1: e.target.value})}
+                        className="w-full text-xs p-2 border border-[#FFE3E8] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF7B93]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 mb-0.5">여자친구</label>
+                      <input 
+                        type="text" 
+                        value={profileInput.partner2} 
+                        onChange={(e) => setProfileInput({...profileInput, partner2: e.target.value})}
+                        className="w-full text-xs p-2 border border-[#FFE3E8] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF7B93]"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 mb-0.5">시작 기념일</label>
+                      <input 
+                        type="date" 
+                        value={profileInput.anniversary} 
+                        onChange={(e) => setProfileInput({...profileInput, anniversary: e.target.value})}
+                        className="w-full text-xs p-2 border border-[#FFE3E8] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF7B93]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 mb-0.5">{partner1} 생일</label>
+                      <input 
+                        type="date" 
+                        value={profileInput.birthday1} 
+                        onChange={(e) => setProfileInput({...profileInput, birthday1: e.target.value})}
+                        className="w-full text-xs p-2 border border-[#FFE3E8] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF7B93]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 mb-0.5">{partner2} 생일</label>
+                      <input 
+                        type="date" 
+                        value={profileInput.birthday2} 
+                        onChange={(e) => setProfileInput({...profileInput, birthday2: e.target.value})}
+                        className="w-full text-xs p-2 border border-[#FFE3E8] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF7B93]"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-2 justify-end pt-1">
+                    <button 
+                      onClick={() => setIsEditingProfile(false)}
+                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs font-bold flex items-center gap-1 transition-all"
+                    >
+                      <X className="w-3.5 h-3.5" /> 취소
+                    </button>
+                    <button 
+                      onClick={handleSaveProfile}
+                      className="px-3 py-1.5 bg-[#FF7B93] hover:bg-[#E05E76] text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-sm transition-all"
+                    >
+                      <Check className="w-3.5 h-3.5" /> 저장하기
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 생일 D-Day 전용 위젯 패널 */}
+            <div className="bg-[#FFF8F9] p-4 rounded-2xl border border-[#FFE3E8] min-w-[240px] flex flex-col justify-center gap-3 self-stretch">
+              <span className="text-[10px] font-bold text-[#FF7B93] tracking-widest flex items-center gap-1 border-b border-dashed border-[#FFD5DC] pb-1.5 uppercase">
+                <Cake className="w-3.5 h-3.5" /> Upcoming Birthdays
+              </span>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs font-medium">
+                  <span className="text-slate-600 flex items-center gap-1">
+                    🤵 {partner1}의 생일
+                  </span>
+                  <span className="bg-sky-100 text-sky-700 px-2 py-0.5 rounded-full font-extrabold text-[11px]">
+                    {bday1DDay}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs font-medium">
+                  <span className="text-slate-600 flex items-center gap-1">
+                    👰 {partner2}의 생일
+                  </span>
+                  <span className="bg-rose-100 text-[#FF7B93] px-2 py-0.5 rounded-full font-extrabold text-[11px]">
+                    {bday2DDay}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ==================================== 1. 커플 캘린더 탭 ==================================== */}
+        {activeTab === 'calendar' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* 달력 카드 */}
+            <div className="lg:col-span-2 bg-white rounded-3xl p-6 shadow-md border border-[#FFE3E8]">
+              {/* 달력 헤더 */}
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xl font-extrabold text-slate-800 flex items-center gap-2">
+                  <Calendar className="w-5.5 h-5.5 text-[#FF7B93]" />
+                  <span>{year}년 {month + 1}월</span>
+                </h3>
+                <div className="flex gap-1 bg-[#FFF0F2] p-1 rounded-xl">
+                  <button onClick={handlePrevMonth} className="p-2 hover:bg-[#FFDEE3] text-[#FF7B93] rounded-lg transition-all">
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                  <button onClick={handleNextMonth} className="p-2 hover:bg-[#FFDEE3] text-[#FF7B93] rounded-lg transition-all">
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* 요일 그리드 */}
+              <div className="grid grid-cols-7 gap-1 text-center mb-2">
+                {['일', '월', '화', '수', '목', '금', '토'].map((d, index) => (
+                  <span 
+                    key={d} 
+                    className={`text-xs font-bold py-1 ${index === 0 ? 'text-[#FF7B93]' : index === 6 ? 'text-blue-400' : 'text-slate-400'}`}
+                  >
+                    {d}
+                  </span>
+                ))}
+              </div>
+
+              {/* 달력 날짜 그리드 */}
+              <div className="grid grid-cols-7 gap-1.5">
+                {days.map((dateObj, index) => {
+                  if (!dateObj) {
+                    return <div key={`empty-${index}`} className="aspect-square" />;
+                  }
+
+                  const dayNum = dateObj.getDate();
+                  const dateStr = dateObj.toISOString().split('T')[0];
+                  const dayMemories = getMemoriesByDate(dateStr);
+                  const hasMemories = dayMemories.length > 0;
+                  const isSelected = selectedDateStr === dateStr;
+                  const isToday = new Date().toISOString().split('T')[0] === dateStr;
+                  const isAnniversary = dateStr === anniversary;
+
+                  // 승효 & 나연 생일 당일 매핑용 비교
+                  const isBday1 = dateStr.endsWith(birthday1.substring(5));
+                  const isBday2 = dateStr.endsWith(birthday2.substring(5));
+
+                  // 요일별 색상 구분
+                  const isSunday = dateObj.getDay() === 0;
+                  const isSaturday = dateObj.getDay() === 6;
+
+                  return (
+                    <button
+                      key={dateStr}
+                      onClick={() => setSelectedDateStr(dateStr)}
+                      className={`aspect-square rounded-2xl relative flex flex-col items-center justify-between p-1.5 transition-all duration-200 group border
+                        ${isSelected 
+                          ? 'bg-[#FF7B93] text-white border-[#FF7B93] shadow-md shadow-[#FF7B93]/20 scale-105 z-10' 
+                          : isToday 
+                            ? 'bg-[#FFEBEF] text-[#FF7B93] border-[#FFD5DC] font-bold' 
+                            : 'bg-[#FFFDFD] hover:bg-[#FFF0F2] text-slate-700 border-[#FFF0F2]'
+                        }
+                      `}
+                    >
+                      {/* 날짜 표시 */}
+                      <span className={`text-xs font-bold self-start pl-1
+                        ${isSelected 
+                          ? 'text-white' 
+                          : isToday 
+                            ? 'text-[#FF7B93]' 
+                            : isSunday 
+                              ? 'text-[#FF7B93]' 
+                              : isSaturday 
+                                ? 'text-blue-500' 
+                                : 'text-slate-700'
+                        }
+                      `}>
+                        {dayNum}
+                      </span>
+
+                      {/* 메모리 마커 / 아이콘 데코 */}
+                      <div className="flex flex-wrap gap-0.5 justify-center pb-1 h-5 w-full">
+                        {isAnniversary && !isSelected && (
+                          <div className="text-[10px]" title="사랑을 시작한 날! 💖">💖</div>
+                        )}
+                        {(isBday1 || isBday2) && !isSelected && (
+                          <div className="text-[10px]" title="생일 🎂">🎂</div>
+                        )}
+                        {hasMemories && (
+                          <div className="flex items-center justify-center">
+                            <span className="text-xs mr-0.5">{dayMemories[0].emoji}</span>
+                            <Heart className={`w-3 h-3 fill-current ${isSelected ? 'text-white' : 'text-[#FF7B93]'}`} />
+                          </div>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 선택한 날의 추억 기록 패널 */}
+            <div className="bg-white rounded-3xl p-6 shadow-md border border-[#FFE3E8] flex flex-col justify-between">
+              <div>
+                <div className="border-b border-[#FFE3E8] pb-4 mb-4">
+                  <span className="text-xs font-bold text-[#FF7B93] bg-[#FFF0F2] px-2.5 py-1 rounded-full">
+                    SELECTED DATE
+                  </span>
+                  <h4 className="text-lg font-black text-slate-800 mt-2">
+                    {new Date(selectedDateStr).toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}
+                  </h4>
+                  
+                  {/* 선택한 날이 기념일이나 생일인지 여부 표시 */}
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    {selectedDateStr === anniversary && (
+                      <span className="text-[10px] bg-rose-50 text-[#FF7B93] px-2 py-0.5 rounded font-bold">🎉 연애 시작한 날!</span>
+                    )}
+                    {selectedDateStr.endsWith(birthday1.substring(5)) && (
+                      <span className="text-[10px] bg-sky-50 text-sky-600 px-2 py-0.5 rounded font-bold">🎂 {partner1} 생일</span>
+                    )}
+                    {selectedDateStr.endsWith(birthday2.substring(5)) && (
+                      <span className="text-[10px] bg-rose-50 text-[#FF7B93] px-2 py-0.5 rounded font-bold">🎂 {partner2} 생일</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* 해당 날짜의 메모리 목록 */}
+                <div className="space-y-4 max-h-[300px] overflow-y-auto pr-1">
+                  {getMemoriesByDate(selectedDateStr).length > 0 ? (
+                    getMemoriesByDate(selectedDateStr).map((mem) => (
+                      <div key={mem.id} className="p-4 bg-[#FFF8F9] rounded-2xl border border-[#FFF0F2] relative group">
+                        <button 
+                          onClick={() => handleDeleteMemory(mem.id)}
+                          className="absolute top-2 right-2 p-1 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                          title="삭제"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <span className="text-lg">{mem.emoji || '🎈'}</span>
+                          <span className="text-xs font-bold text-[#FF7B93] bg-[#FFECEF] px-2 py-0.5 rounded">
+                            {mem.category}
+                          </span>
+                        </div>
+                        <h5 className="font-bold text-slate-800 text-sm">{mem.title}</h5>
+                        <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">{mem.description}</p>
+                        {mem.location && (
+                          <div className="flex items-center gap-1 text-[10px] text-slate-400 mt-2">
+                            <MapPin className="w-3 h-3 text-[#FF7B93]" />
+                            <span>{mem.location}</span>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-center py-10">
+                      <p className="text-sm text-slate-400">등록된 추억이 없습니다.</p>
+                      <p className="text-xs text-slate-300 mt-1 font-medium">이날의 커플 일정이나 추억을 기록해 보아요!</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* 추억 추가 버튼 */}
+              <button 
+                onClick={() => setShowAddModal(true)}
+                className="mt-6 w-full bg-gradient-to-r from-[#FF7B93] to-[#FF9EAF] text-white py-3 rounded-2xl font-bold flex items-center justify-center gap-2 shadow-sm hover:opacity-95 transition-all duration-200"
+              >
+                <Plus className="w-5 h-5" />
+                <span>오늘의 추억 기록하기</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ==================================== 2. 추억 보관함 (갤러리) 탭 ==================================== */}
+        {activeTab === 'gallery' && (
+          <div>
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-extrabold text-slate-800 flex items-center gap-2">
+                <BookOpen className="w-6 h-6 text-[#FF7B93]" />
+                <span>우리의 메모리즈 타임라인 ({memories.length})</span>
+              </h3>
+              
+              <button 
+                onClick={() => {
+                  setSelectedDateStr(new Date().toISOString().split('T')[0]);
+                  setShowAddModal(true);
+                }}
+                className="bg-[#FFECEF] text-[#FF7B93] hover:bg-[#FFD5DC] px-4 py-2 rounded-2xl text-xs font-bold flex items-center gap-1.5 transition-all"
+              >
+                <Plus className="w-4 h-4" /> 새로운 추억 등록
+              </button>
+            </div>
+
+            {/* 추억 그리드 */}
+            {memories.length > 0 ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+                {memories.map((mem) => (
+                  <div 
+                    key={mem.id} 
+                    className="bg-white p-4 pb-6 rounded-2xl shadow-sm border border-[#FFE3E8] relative hover:shadow-md transition-all duration-300 transform hover:-translate-y-1 group"
+                  >
+                    {/* 상단 삭제 버튼 */}
+                    <button 
+                      onClick={() => handleDeleteMemory(mem.id)}
+                      className="absolute top-2 right-2 p-1.5 bg-white/80 hover:bg-red-50 text-slate-400 hover:text-red-500 rounded-full shadow-sm opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+
+                    {/* 폴라로이드 사진 가상 영역 */}
+                    <div className="aspect-[4/3] bg-gradient-to-br from-[#FFF5F6] to-[#FFEBEF] rounded-xl flex flex-col items-center justify-center relative mb-4 overflow-hidden border border-[#FFF0F2]">
+                      <div className="text-5xl animate-bounce">{mem.emoji || '💖'}</div>
+                      <span className="absolute bottom-2 left-2 text-[10px] bg-white/80 backdrop-blur-sm text-[#FF7B93] px-2 py-0.5 rounded-full font-bold">
+                        {mem.category}
+                      </span>
+                    </div>
+
+                    {/* 텍스트 내용 */}
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1 text-[10px] text-[#FF7B93] font-bold">
+                        <Calendar className="w-3 h-3" />
+                        <span>{mem.date}</span>
+                      </div>
+                      <h4 className="font-extrabold text-slate-800 text-base line-clamp-1">{mem.title}</h4>
+                      <p className="text-xs text-slate-500 leading-relaxed line-clamp-3">{mem.description}</p>
+                      
+                      {mem.location && (
+                        <div className="flex items-center gap-1 text-[10px] text-slate-400 pt-2 border-t border-dashed border-[#FFE3E8]">
+                          <MapPin className="w-3 h-3 text-[#FF7B93]" />
+                          <span className="line-clamp-1">{mem.location}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="bg-white rounded-3xl p-12 text-center border border-[#FFE3E8] shadow-sm">
+                <div className="w-16 h-16 bg-[#FFF0F2] rounded-full flex items-center justify-center mx-auto mb-4">
+                  <Camera className="w-8 h-8 text-[#FF7B93]" />
+                </div>
+                <h4 className="text-lg font-bold text-slate-700">기록된 아름다운 날들이 없습니다</h4>
+                <p className="text-sm text-slate-400 mt-1">지금 커플 달력에서 첫 기록을 작성하여 채워보세요!</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ==================================== 3. 사랑의 러브레터 탭 ==================================== */}
+        {activeTab === 'messages' && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* 메시지 전달 Form */}
+            <div className="bg-white rounded-3xl p-6 shadow-md border border-[#FFE3E8] h-fit">
+              <h3 className="text-lg font-black text-slate-800 mb-4 flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-[#FF7B93]" />
+                <span>러브 포스트잇 남기기</span>
+              </h3>
+              
+              <form onSubmit={handleAddMessage} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1">작성하는 사람</label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setNewMessage({...newMessage, sender: '남자친구'})}
+                      className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all border ${newMessage.sender === '남자친구' ? 'bg-[#FF7B93] text-white border-[#FF7B93]' : 'bg-slate-50 text-slate-500 border-slate-200'}`}
+                    >
+                      🤵 {partner1}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNewMessage({...newMessage, sender: '여자친구'})}
+                      className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all border ${newMessage.sender === '여자친구' ? 'bg-[#FF7B93] text-white border-[#FF7B93]' : 'bg-slate-50 text-slate-500 border-slate-200'}`}
+                    >
+                      👰 {partner2}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1">마음속 한 마디</label>
+                  <textarea
+                    rows={4}
+                    value={newMessage.content}
+                    onChange={(e) => setNewMessage({...newMessage, content: e.target.value})}
+                    placeholder="상대방이 읽으면 미소 지을 다정하고 사랑스러운 한마디를 입력하세요."
+                    className="w-full text-sm p-3 border border-[#FFE3E8] rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#FF7B93] bg-[#FFFBFB] placeholder-slate-400 resize-none"
+                    maxLength={150}
+                  />
+                  <div className="text-right text-[10px] text-slate-400 mt-1">
+                    {newMessage.content.length} / 150자
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full bg-[#FF7B93] hover:bg-[#E05E76] text-white font-bold py-2.5 rounded-xl text-sm transition-all shadow-sm"
+                >
+                  보드에 메시지 붙이기 💌
+                </button>
+              </form>
+            </div>
+
+            {/* 실시간 메시지 보드판 */}
+            <div className="md:col-span-2 space-y-4">
+              <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-[#FF7B93]" />
+                <span>실시간 전광판 핀보드</span>
+              </h3>
+
+              {messages.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {messages.map((msg) => {
+                    const isBoyfriend = msg.sender === '남자친구';
+                    return (
+                      <div 
+                        key={msg.id} 
+                        className={`p-5 rounded-3xl relative shadow-sm border transform rotate-[0.5deg] hover:rotate-0 transition-transform duration-200
+                          ${isBoyfriend 
+                            ? 'bg-[#EBF7FF] border-[#D0EAFA] text-slate-800' 
+                            : 'bg-[#FFF0F2] border-[#FFE2E6] text-slate-800'
+                          }
+                        `}
+                      >
+                        {/* 압핀 데코 */}
+                        <div className="absolute top-2 left-1/2 -translate-x-1/2 w-4 h-4 bg-slate-300 rounded-full border-2 border-white shadow-inner opacity-70" />
+                        
+                        <button 
+                          onClick={() => handleDeleteMessage(msg.id)}
+                          className="absolute top-2 right-2 p-1 text-slate-400 hover:text-red-500 rounded-lg transition-colors"
+                          title="삭제"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+
+                        <div className="flex items-center justify-between mb-3 mt-1.5">
+                          <span className={`text-xs font-black px-2.5 py-0.5 rounded-full
+                            ${isBoyfriend ? 'bg-sky-200 text-sky-800' : 'bg-rose-200 text-[#FF7B93]'}
+                          `}>
+                            {isBoyfriend ? `🤵 ${partner1}` : `👰 ${partner2}`}
+                          </span>
+                          <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {msg.date}
+                          </span>
+                        </div>
+
+                        <p className="text-sm font-semibold leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="bg-white rounded-3xl p-12 text-center border border-[#FFE3E8] shadow-sm">
+                  <p className="text-sm text-slate-400">아직 등록된 메시지가 없어요.</p>
+                  <p className="text-xs text-slate-300 mt-1">상대방을 향한 고백을 가장 먼저 전해보세요!</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* ==================================== 추억 추가 모달 ==================================== */}
+      {showAddModal && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl w-full max-w-md p-6 shadow-xl border border-[#FFE3E8] relative animate-in fade-in zoom-in-95 duration-200">
+            <button 
+              onClick={() => setShowAddModal(false)}
+              className="absolute top-4 right-4 p-1.5 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="mb-4">
+              <span className="text-xs font-bold text-[#FF7B93] bg-[#FFF0F2] px-2.5 py-1 rounded-full">
+                CREATE MEMORY
+              </span>
+              <h3 className="text-lg font-black text-slate-800 mt-2">
+                {new Date(selectedDateStr).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' })}의 추억 남기기
+              </h3>
+            </div>
+
+            <form onSubmit={handleAddMemory} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1">추억 제목</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="예) 깜짝 꽃다발 선물 받은 날 💐"
+                  value={newMemory.title}
+                  onChange={(e) => setNewMemory({...newMemory, title: e.target.value})}
+                  className="w-full text-sm p-2.5 border border-[#FFE3E8] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF7B93]"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1">카테고리</label>
+                  <select
+                    value={newMemory.category}
+                    onChange={(e) => setNewMemory({...newMemory, category: e.target.value})}
+                    className="w-full text-sm p-2.5 border border-[#FFE3E8] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF7B93] bg-white"
+                  >
+                    <option value="데이트">데이트 🧺</option>
+                    <option value="기념일">기념일 🌹</option>
+                    <option value="여행">여행 ✈️</option>
+                    <option value="일상">일상 🎬</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1">대표 이모지</label>
+                  <select
+                    value={newMemory.emoji}
+                    onChange={(e) => setNewMemory({...newMemory, emoji: e.target.value})}
+                    className="w-full text-sm p-2.5 border border-[#FFE3E8] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF7B93] bg-white"
+                  >
+                    <option value="💖">러브 💖</option>
+                    <option value="🎈">풍선 🎈</option>
+                    <option value="🌹">장미 🌹</option>
+                    <option value="🧺">소풍 🧺</option>
+                    <option value="🎬">영화 🎬</option>
+                    <option value="✈️">여행 ✈️</option>
+                    <option value="🎂">기념일 🎂</option>
+                    <option value="🍰">디저트 🍰</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1">장소 / 위치</label>
+                <input
+                  type="text"
+                  placeholder="예) 연남동 예쁜 골목길"
+                  value={newMemory.location}
+                  onChange={(e) => setNewMemory({...newMemory, location: e.target.value})}
+                  className="w-full text-sm p-2.5 border border-[#FFE3E8] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF7B93]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1">자세한 내용</label>
+                <textarea
+                  required
+                  rows={4}
+                  placeholder="그날 있었던 둘만의 소중한 기록이나 대화를 자유롭게 남겨보세요."
+                  value={newMemory.description}
+                  onChange={(e) => setNewMemory({...newMemory, description: e.target.value})}
+                  className="w-full text-sm p-2.5 border border-[#FFE3E8] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF7B93] resize-none"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddModal(false)}
+                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl font-bold text-sm transition-all"
+                >
+                  취소
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 bg-[#FF7B93] hover:bg-[#E05E76] text-white rounded-xl font-bold text-sm transition-all shadow-sm"
+                >
+                  서버에 저장하기 ✨
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+```
